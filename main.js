@@ -4,7 +4,6 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 const ASSET_PATH = "./assets/textures/";
 const ANIM_FRAMES = 32; 
 
-// --- 1. ASSET DEFINITIONS ---
 const ITEMS = {
     'grass': { name: 'Grass Block', src: ASSET_PATH + 'block/grass_block_side.png', block: true, transparent: false },
     'dirt': { name: 'Dirt', src: ASSET_PATH + 'block/dirt.png', block: true, transparent: false },
@@ -70,82 +69,67 @@ const ITEMS = {
     'oak_door_top': { name: 'Oak Door', src: ASSET_PATH + 'block/oak_door_top.png', block: true, transparent: true }
 };
 
+// Mining Speed Logic
+const HARDNESS = { 'obsidian': 50, 'stone': 1.5, 'cobblestone': 2, 'coal_ore': 3, 'iron_ore': 3, 'diamond_ore': 3, 'iron_block': 5, 'diamond_block': 5, 'coal_block': 5, 'oak_log': 2, 'oak_log_tb': 2, 'oak_planks': 2, 'chest': 2.5, 'crafting_table': 2.5, 'furnace': 3.5, 'dirt': 0.5, 'grass': 0.5, 'sand': 0.5, 'gravel': 0.6, 'oak_leaves': 0.2, 'glass': 0.3, 'nether_portal': 0, 'fire': 0 };
+const TOOLS = { 'wooden_pickaxe': { type: 'pickaxe', speed: 2 }, 'stone_pickaxe': { type: 'pickaxe', speed: 4 }, 'iron_pickaxe': { type: 'pickaxe', speed: 6 }, 'diamond_pickaxe': { type: 'pickaxe', speed: 8 }, 'wooden_axe': { type: 'axe', speed: 2 }, 'stone_axe': { type: 'axe', speed: 4 }, 'iron_axe': { type: 'axe', speed: 6 }, 'diamond_axe': { type: 'axe', speed: 8 }, 'wooden_shovel': { type: 'shovel', speed: 2 }, 'stone_shovel': { type: 'shovel', speed: 4 }, 'iron_shovel': { type: 'shovel', speed: 6 }, 'diamond_shovel': { type: 'shovel', speed: 8 } };
+const BLOCK_TOOLS = { 'stone': 'pickaxe', 'cobblestone': 'pickaxe', 'coal_ore': 'pickaxe', 'iron_ore': 'pickaxe', 'diamond_ore': 'pickaxe', 'obsidian': 'pickaxe', 'iron_block': 'pickaxe', 'diamond_block': 'pickaxe', 'coal_block': 'pickaxe', 'furnace': 'pickaxe', 'oak_log': 'axe', 'oak_log_tb': 'axe', 'oak_planks': 'axe', 'chest': 'axe', 'crafting_table': 'axe', 'dirt': 'shovel', 'grass': 'shovel', 'sand': 'shovel', 'gravel': 'shovel' };
+
+function getBreakTime(blockType, item) {
+    if (gameMode === 'creative') return 0;
+    const hardness = HARDNESS[blockType] || 1.0;
+    const requiredTool = BLOCK_TOOLS[blockType];
+    let speedMult = 1, canHarvest = false;
+    if (item && TOOLS[item.id]) {
+        const tool = TOOLS[item.id];
+        if (tool.type === requiredTool) { speedMult = tool.speed; canHarvest = true; }
+    }
+    if (!requiredTool) canHarvest = true; 
+    if (canHarvest || requiredTool) {
+        let time = (hardness * 1.5) / speedMult;
+        if (!canHarvest) time = hardness * 5; 
+        return time; 
+    }
+    return hardness * 5;
+}
+
 const textureLoader = new THREE.TextureLoader();
 const textures = {};
 let fireTexture1, fireTexture2, fireMaterial, lavaSrcTexture, lavaFlowTexture;
 
-// SETTINGS
-let showFPS = false;
-let limitFPS = 0; // 0 = unlimited
-let lastFrameTime = 0;
-let userSkinImage = null; // Stores uploaded skin image
+let showFPS = false, limitFPS = 0, lastFrameTime = 0, userSkinImage = null;
+let username = "Steve", chatKey = 'KeyT', isChatOpen = false, isSettingChatKey = false;
+const activeChatMessages =[]; const CHAT_TIMEOUT = 5000; 
 
-// --- CHAT & USER SETTINGS ---
-let username = "Steve";
-let chatKey = 'KeyT';
-let isChatOpen = false;
-let isSettingChatKey = false;
-const activeChatMessages =[]; 
-const CHAT_TIMEOUT = 5000; 
-
-// --- 3rd PERSON & PLAYER MODEL VARIABLES ---
-let viewMode = 0; // 0: First, 1: Third Back, 2: Third Front
+let viewMode = 0; 
 let playerGroup, playerHead, playerBody, leftArm, rightArm, leftLeg, rightLeg;
-let tpsCamDist = 0; 
-const MAX_TPS_DIST = 60;
+let tpsCamDist = 0; const MAX_TPS_DIST = 60;
 
-// GLOBAL GEOMETRIES FOR PERFORMANCE
 const BLOCK = 20;
 const boxGeometry = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 const planeGeometry = new THREE.PlaneGeometry(BLOCK, BLOCK);
 
-// INSTANCED MESH OPTIMIZATION
+// INFINITE CHUNK SYSTEM
+const CHUNK_SIZE = 16;
+const RENDER_DIST = 3; 
 const SIMPLE_BLOCKS = new Set(['grass', 'dirt', 'stone', 'sand', 'oak_log', 'oak_log_tb', 'oak_leaves', 'oak_planks', 'cobblestone', 'glass', 'brick', 'coal_ore', 'iron_ore', 'diamond_ore', 'diamond_block', 'iron_block', 'coal_block', 'obsidian', 'gravel']);
-const imManager = {
-    meshes: {}, freeIds: {}, counts: {}, MAX: 80000,
-    add: function(type, x, y, z) {
-        if (!this.meshes[type]) {
-            const mat = getBlockMaterial(type);
-            const im = new THREE.InstancedMesh(boxGeometry, mat, this.MAX);
-            im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-            im.count = 0; scene.add(im);
-            this.meshes[type] = im; this.freeIds[type] = []; this.counts[type] = 0;
-        }
-        const im = this.meshes[type];
-        let id = this.freeIds[type].length > 0 ? this.freeIds[type].pop() : this.counts[type]++;
-        if(this.counts[type] > im.count) im.count = this.counts[type];
+const chunks = new Map();
 
-        const dummy = new THREE.Object3D();
-        dummy.position.set(x, y, z); dummy.updateMatrix();
-        im.setMatrixAt(id, dummy.matrix); im.instanceMatrix.needsUpdate = true;
-        return id;
-    },
-    remove: function(type, id) {
-        const im = this.meshes[type]; if(!im) return;
-        const dummy = new THREE.Object3D(); dummy.scale.set(0, 0, 0); dummy.updateMatrix();
-        im.setMatrixAt(id, dummy.matrix); im.instanceMatrix.needsUpdate = true;
-        this.freeIds[type].push(id);
-    },
-    setVisibility: function(type, id, x, y, z, visible) {
-        const im = this.meshes[type]; if (!im) return;
-        const dummy = new THREE.Object3D(); dummy.position.set(x, y, z);
-        if (!visible) dummy.scale.set(0, 0, 0);
-        dummy.updateMatrix(); im.setMatrixAt(id, dummy.matrix); im.instanceMatrix.needsUpdate = true;
-    }
-};
+function getChunkKey(cx, cz) { return `${cx},${cz}`; }
+function getChunk(cx, cz) {
+    const k = getChunkKey(cx, cz);
+    if (!chunks.has(k)) chunks.set(k, { cx, cz, blocks: new Map(), meshes: new Map(), dirty: false, isGenerated: false, isMeshed: false });
+    return chunks.get(k);
+}
 
 function loadTex(url) {
     const t = textureLoader.load(url, ()=>{}, undefined, ()=>{});
-    t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.colorSpace = THREE.SRGBColorSpace;
-    return t;
+    t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
 function getSkinTexture(img, x, y, w, h, isOverlay) {
-    const canvas = document.createElement('canvas');
-    canvas.width = w; canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    if (!isOverlay) { ctx.fillStyle = '#b98e72'; ctx.fillRect(0, 0, w, h); } else { ctx.clearRect(0, 0, w, h); }
-    if (img) { ctx.drawImage(img, x, y, w, h, 0, 0, w, h); } else if (!isOverlay) { ctx.fillStyle = 'rgba(0,0,0,0.1)'; if (Math.random() > 0.5) ctx.fillRect(1, 1, 2, 2); }
+    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h; const ctx = canvas.getContext('2d');
+    if (!isOverlay) { ctx.fillStyle = '#b98e72'; ctx.fillRect(0, 0, w, h); } else ctx.clearRect(0, 0, w, h);
+    if (img) ctx.drawImage(img, x, y, w, h, 0, 0, w, h); else if (!isOverlay) { ctx.fillStyle = 'rgba(0,0,0,0.1)'; if (Math.random() > 0.5) ctx.fillRect(1, 1, 2, 2); }
     const tex = new THREE.CanvasTexture(canvas); tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.colorSpace = THREE.SRGBColorSpace; tex.flipY = false; 
     return tex;
 }
@@ -155,11 +139,9 @@ function getBlockMaterial(type) {
         if(type === 'grass') {
             const side = loadTex(ITEMS.grass.src); const top = loadTex(ASSET_PATH + 'block/grass_block_top.png'); const bot = loadTex(ITEMS.dirt.src);
             textures[type] =[ new THREE.MeshLambertMaterial({ map: side }), new THREE.MeshLambertMaterial({ map: side }), new THREE.MeshLambertMaterial({ map: top, color: 0x7cfc00 }), new THREE.MeshLambertMaterial({ map: bot }), new THREE.MeshLambertMaterial({ map: side }), new THREE.MeshLambertMaterial({ map: side }) ];
-        } else if (type === 'oak_leaves') {
-            textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS.oak_leaves.src), color: 0x48b518, transparent: true, alphaTest: 0.5 });
-        } else if (type === 'glass') {
-            textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS.glass.src), transparent: true, opacity: 0.6 });
-        } else if (type === 'furnace') {
+        } else if (type === 'oak_leaves') textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS.oak_leaves.src), color: 0x48b518, transparent: true, alphaTest: 0.5 });
+        else if (type === 'glass') textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS.glass.src), transparent: true, opacity: 0.6 });
+        else if (type === 'furnace') {
             const front = loadTex(ASSET_PATH + 'block/furnace_front.png'); const side = loadTex(ASSET_PATH + 'block/furnace_side.png'); const top = loadTex(ASSET_PATH + 'block/furnace_top.png');
             textures[type] =[ new THREE.MeshLambertMaterial({ map: side }), new THREE.MeshLambertMaterial({ map: side }), new THREE.MeshLambertMaterial({ map: top }), new THREE.MeshLambertMaterial({ map: top }), new THREE.MeshLambertMaterial({ map: front }), new THREE.MeshLambertMaterial({ map: side }) ];
         } else if (type === 'chest' || type === 'large_chest') {
@@ -174,17 +156,14 @@ function getBlockMaterial(type) {
         } else if (type === 'fire') {
             fireTexture1 = loadTex(ITEMS.fire.src); fireTexture1.wrapS = fireTexture1.wrapT = THREE.RepeatWrapping; fireTexture1.repeat.set(1, 1/ANIM_FRAMES); 
             fireTexture2 = loadTex(ASSET_PATH + 'block/fire2.png'); fireTexture2.wrapS = fireTexture2.wrapT = THREE.RepeatWrapping; fireTexture2.repeat.set(1, 1/ANIM_FRAMES); 
-            fireMaterial = new THREE.MeshBasicMaterial({ map: fireTexture1, transparent: true, side: THREE.DoubleSide, depthWrite: false, alphaTest: 0.5 });
-            textures[type] = fireMaterial;
+            fireMaterial = new THREE.MeshBasicMaterial({ map: fireTexture1, transparent: true, side: THREE.DoubleSide, depthWrite: false, alphaTest: 0.5 }); textures[type] = fireMaterial;
         } else if (type === 'lava' || type === 'lava_flow') {
             const tex = loadTex((type==='lava')?ITEMS.lava.src:ITEMS.lava_flow.src); tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1, 1/ANIM_FRAMES);
             if(type==='lava') lavaSrcTexture = tex; else lavaFlowTexture = tex;
             textures[type] = new THREE.MeshBasicMaterial({ map: tex, color: 0xffffff });
-        } else if (type === 'oak_door_b' || type === 'oak_door_top') {
-            textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS[type].src), transparent: true, alphaTest: 0.5, side: THREE.DoubleSide });
-        } else if (type === 'oak_trapdoor') {
-            textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS.oak_trapdoor.src), transparent: true, alphaTest: 0.5 });
-        } else {
+        } else if (type === 'oak_door_b' || type === 'oak_door_top') textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS[type].src), transparent: true, alphaTest: 0.5, side: THREE.DoubleSide });
+        else if (type === 'oak_trapdoor') textures[type] = new THREE.MeshLambertMaterial({ map: loadTex(ITEMS.oak_trapdoor.src), transparent: true, alphaTest: 0.5 });
+        else {
             const tex = loadTex(ITEMS[type].src);
             textures[type] = type === 'nether_portal' ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.75, color: 0xaa00ff, side: THREE.DoubleSide }) : new THREE.MeshLambertMaterial({ map: tex });
         }
@@ -192,7 +171,6 @@ function getBlockMaterial(type) {
     return textures[type];
 }
 
-// --- 2. GAME LOGIC ---
 let gameMode = 'survival', isFlying = false, lastSpaceTime = 0, isSprinting = false, lastWTime = 0;
 let playerHealth = 10, playerMaxY = 0, onGround = false, isDead = false, handSwingTime = 0, handSwingType = 'punch';
 let isPaused = false, isTitleScreen = true, isCrouching = false;
@@ -209,7 +187,7 @@ const FUEL_VALUES = { 'coal': 80, 'oak_planks': 15, 'oak_log': 15, 'stick': 5, '
 
 function initInventory(mode) {
     for(let i=0; i<46; i++) inventory[i] = null; offHandItem = null;
-    if (mode === 'survival') { inventory[0] = { id: 'wooden_pickaxe', count: 1 }; inventory[1] = { id: 'oak_log', count: 16 }; inventory[2] = { id: 'sand', count: 16 }; } 
+    if (mode === 'survival') { inventory[0] = { id: 'iron_pickaxe', count: 1 }; inventory[1] = { id: 'oak_log', count: 16 }; inventory[2] = { id: 'sand', count: 16 }; } 
     renderInventory();
 }
 
@@ -226,31 +204,31 @@ function addItemToInventory(id, count) {
 
 const RECIPES =[
     { pattern: ["L"], keys: {L:'oak_log'}, result: {id:'oak_planks', count:4} },
-    { pattern: ["P","P"], keys: {P:'oak_planks'}, result: {id:'stick', count:4} },
+    { pattern:["P","P"], keys: {P:'oak_planks'}, result: {id:'stick', count:4} },
     { pattern:["PP","PP"], keys: {P:'oak_planks'}, result: {id:'crafting_table', count:1} },
-    { pattern: ["PPP","P P","PPP"], keys: {P:'oak_planks'}, result: {id:'chest', count:1} },
+    { pattern:["PPP","P P","PPP"], keys: {P:'oak_planks'}, result: {id:'chest', count:1} },
     { pattern:["CCC","C C","CCC"], keys: {C:'cobblestone'}, result: {id:'furnace', count:1} },
     { pattern: ["MMM"," S "," S "], keys: {M:'oak_planks', S:'stick'}, result: {id:'wooden_pickaxe', count:1} },
     { pattern: ["MMM"," S "," S "], keys: {M:'cobblestone', S:'stick'}, result: {id:'stone_pickaxe', count:1} },
     { pattern:["MMM"," S "," S "], keys: {M:'iron_ingot', S:'stick'}, result: {id:'iron_pickaxe', count:1} },
-    { pattern: ["MMM"," S "," S "], keys: {M:'diamond', S:'stick'}, result: {id:'diamond_pickaxe', count:1} },
+    { pattern:["MMM"," S "," S "], keys: {M:'diamond', S:'stick'}, result: {id:'diamond_pickaxe', count:1} },
     { pattern: ["MM","MS"," S"], keys: {M:'oak_planks', S:'stick'}, result: {id:'wooden_axe', count:1} },
     { pattern:["MM","MS"," S"], keys: {M:'cobblestone', S:'stick'}, result: {id:'stone_axe', count:1} },
     { pattern: ["MM","MS"," S"], keys: {M:'iron_ingot', S:'stick'}, result: {id:'iron_axe', count:1} },
     { pattern: ["MM","MS"," S"], keys: {M:'diamond', S:'stick'}, result: {id:'diamond_axe', count:1} },
-    { pattern: ["M","M","S"], keys: {M:'oak_planks', S:'stick'}, result: {id:'wooden_sword', count:1} },
+    { pattern:["M","M","S"], keys: {M:'oak_planks', S:'stick'}, result: {id:'wooden_sword', count:1} },
     { pattern: ["M","M","S"], keys: {M:'cobblestone', S:'stick'}, result: {id:'stone_sword', count:1} },
     { pattern:["M","M","S"], keys: {M:'iron_ingot', S:'stick'}, result: {id:'iron_sword', count:1} },
-    { pattern: ["M","M","S"], keys: {M:'diamond', S:'stick'}, result: {id:'diamond_sword', count:1} },
+    { pattern:["M","M","S"], keys: {M:'diamond', S:'stick'}, result: {id:'diamond_sword', count:1} },
     { pattern: ["M","S","S"], keys: {M:'oak_planks', S:'stick'}, result: {id:'wooden_shovel', count:1} },
     { pattern:["M","S","S"], keys: {M:'cobblestone', S:'stick'}, result: {id:'stone_shovel', count:1} },
     { pattern: ["M","S","S"], keys: {M:'iron_ingot', S:'stick'}, result: {id:'iron_shovel', count:1} },
     { pattern: ["M","S","S"], keys: {M:'diamond', S:'stick'}, result: {id:'diamond_shovel', count:1} },
-    { pattern: ["I I"," I "], keys: {I:'iron_ingot'}, result: {id:'bucket', count:1} },
+    { pattern:["I I"," I "], keys: {I:'iron_ingot'}, result: {id:'bucket', count:1} },
     { pattern: ["I "," F"], keys: {I:'iron_ingot', F:'flint'}, result: {id:'flint_and_steel', count:1} },
     { pattern:["III","III","III"], keys: {I:'iron_ingot'}, result: {id:'iron_block', count:1} },
     { pattern: ["DDD","DDD","DDD"], keys: {D:'diamond'}, result: {id:'diamond_block', count:1} },
-    { pattern: ["CCC","CCC","CCC"], keys: {C:'coal'}, result: {id:'coal_block', count:1} },
+    { pattern:["CCC","CCC","CCC"], keys: {C:'coal'}, result: {id:'coal_block', count:1} },
     { pattern: ["B"], keys: {B:'iron_block'}, result: {id:'iron_ingot', count:9} },
     { pattern: ["B"], keys: {B:'diamond_block'}, result: {id:'diamond', count:9} },
     { pattern: ["B"], keys: {B:'coal_block'}, result: {id:'coal', count:9} },
@@ -261,10 +239,7 @@ function checkCrafting() {
     const width = craftingMode; const gridStart = 36; const grid =[];
     for(let r=0; r<3; r++) {
         const row =[];
-        for(let c=0; c<3; c++) {
-            if (r < width && c < width) { const idx = gridStart + (r * width) + c; row.push(inventory[idx] ? inventory[idx].id : null); } 
-            else row.push(null);
-        }
+        for(let c=0; c<3; c++) { if (r < width && c < width) { const idx = gridStart + (r * width) + c; row.push(inventory[idx] ? inventory[idx].id : null); } else row.push(null); }
         grid.push(row);
     }
     let minR=3, maxR=-1, minC=3, maxC=-1;
@@ -276,13 +251,7 @@ function checkCrafting() {
             const pat = recipe.pattern; const patH = pat.length; const patW = pat[0].length;
             if (patH !== shapeH || patW !== shapeW) continue;
             let valid = true;
-            for(let r=0; r<patH; r++) {
-                for(let c=0; c<patW; c++) {
-                    const gridItem = grid[minR+r][minC+c]; const char = pat[r][c];
-                    if (char === ' ') { if (gridItem !== null) valid = false; } 
-                    else { const requiredId = recipe.keys[char]; if (gridItem !== requiredId) valid = false; }
-                }
-            }
+            for(let r=0; r<patH; r++) { for(let c=0; c<patW; c++) { const gridItem = grid[minR+r][minC+c]; const char = pat[r][c]; if (char === ' ') { if (gridItem !== null) valid = false; } else { const requiredId = recipe.keys[char]; if (gridItem !== requiredId) valid = false; } } }
             if (valid) { match = recipe.result; break; }
         }
     }
@@ -291,12 +260,7 @@ function checkCrafting() {
 
 function consumeIngredients() {
     const end = 36 + (craftingMode * craftingMode);
-    for(let i=36; i<end; i++) {
-        if (inventory[i]) {
-            inventory[i].count--;
-            if (inventory[i].count <= 0) inventory[i] = null;
-        }
-    }
+    for(let i=36; i<end; i++) { if (inventory[i]) { inventory[i].count--; if (inventory[i].count <= 0) inventory[i] = null; } }
 }
 
 function renderInventory() {
@@ -334,8 +298,7 @@ function renderInventory() {
 }
 
 function renderFurnace() {
-    if(!currentFurnace) return;
-    const data = currentFurnace.userData.furnace;
+    if(!currentFurnace) return; const data = currentFurnace.userData.furnace;
     const slots =[document.getElementById('f-input'), document.getElementById('f-fuel'), document.getElementById('f-output')];
     const items =[data.input, data.fuel, data.output];
     slots.forEach((el, i) => {
@@ -343,45 +306,35 @@ function renderFurnace() {
         if(item) el.innerHTML = `<div class="item-icon" style="background-image: url('${ITEMS[item.id].src}')"></div><div class="item-count">${item.count > 1 ? item.count : ''}</div>`;
         el.onmousedown = (e) => handleFurnaceSlotClick(i, e);
     });
-    const flameH = data.maxBurnTime > 0 ? (data.burnTime / data.maxBurnTime) * 100 : 0;
-    document.getElementById('f-flame-fill').style.height = flameH + "%";
+    document.getElementById('f-flame-fill').style.height = (data.maxBurnTime > 0 ? (data.burnTime / data.maxBurnTime) * 100 : 0) + "%";
     document.getElementById('f-arrow-fill').style.width = ((data.cookTime / 10) * 100) + "%";
 }
 
 function renderCreativeList() {
-    const container = document.getElementById('creative-list');
-    const search = document.getElementById('creative-search').value.toLowerCase();
+    const container = document.getElementById('creative-list'); const search = document.getElementById('creative-search').value.toLowerCase();
     container.innerHTML = '';
     Object.keys(ITEMS).forEach(key => {
         if(ITEMS[key].name.toLowerCase().includes(search) && !['oak_log_tb','oak_door_top','oak_door_b'].includes(key)) {
             const slotDiv = document.createElement('div'); slotDiv.className = 'slot'; slotDiv.draggable = true;
             slotDiv.innerHTML = `<div class="item-icon" style="background-image: url('${ITEMS[key].src}')"></div>`;
-            slotDiv.title = ITEMS[key].name; slotDiv.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', key));
-            container.appendChild(slotDiv);
+            slotDiv.title = ITEMS[key].name; slotDiv.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', key)); container.appendChild(slotDiv);
         }
     });
 }
 
 function getNeighborChest(obj) {
-    if(!obj) return null;
-    const x = obj.position.x, y = obj.position.y, z = obj.position.z;
-    const dirs =[{x:BLOCK,z:0}, {x:-BLOCK,z:0}, {x:0,z:BLOCK}, {x:0,z:-BLOCK}];
-    for(let d of dirs) { const neighbor = worldMap.get(getKey(x+d.x, y, z+d.z)); if(neighbor && neighbor.type === 'chest') return neighbor.mesh; }
+    if(!obj) return null; const x = obj.position.x, y = obj.position.y, z = obj.position.z;
+    for(let d of[{x:BLOCK,z:0}, {x:-BLOCK,z:0}, {x:0,z:BLOCK}, {x:0,z:-BLOCK}]) { const neighbor = worldMap.get(getKey(x+d.x, y, z+d.z)); if(neighbor && neighbor.type === 'chest') return neighbor.mesh; }
     return null;
 }
 
 function renderChestGrid() {
     const container = document.getElementById('chest-grid'); container.innerHTML = '';
-    const neighbor = getNeighborChest(currentChest);
-    let combinedInv =[];
+    const neighbor = getNeighborChest(currentChest); let combinedInv =[];
     if(neighbor) {
         container.style.gridTemplateColumns = "repeat(9, 36px)"; container.style.width = (9 * 38) + "px"; 
-        document.getElementById('chest-window').className = "window large-window";
-        combinedInv =[...currentChest.userData.inventory, ...neighbor.userData.inventory];
-    } else {
-        container.style.gridTemplateColumns = "repeat(9, 36px)"; document.getElementById('chest-window').className = "window";
-        combinedInv = currentChest.userData.inventory;
-    }
+        document.getElementById('chest-window').className = "window large-window"; combinedInv =[...currentChest.userData.inventory, ...neighbor.userData.inventory];
+    } else { container.style.gridTemplateColumns = "repeat(9, 36px)"; document.getElementById('chest-window').className = "window"; combinedInv = currentChest.userData.inventory; }
     for(let i=0; i<combinedInv.length; i++) {
         const item = combinedInv[i]; const slotDiv = document.createElement('div'); slotDiv.className = 'slot';
         slotDiv.addEventListener('mousedown', (e) => handleChestSlotClick(i, e, combinedInv, neighbor));
@@ -400,10 +353,7 @@ function updateGridDOM(elementId, startIdx, endIdx) {
             slotDiv.addEventListener('dragover', (e) => e.preventDefault());
             slotDiv.addEventListener('drop', (e) => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain'); if (id && ITEMS[id]) { inventory[i] = { id: id, count: 1 }; renderInventory(); } });
             slotDiv.addEventListener('contextmenu', (e) => { e.preventDefault(); inventory[i] = null; renderInventory(); });
-        } else {
-            slotDiv.addEventListener('mousemove', (e) => handleSlotMouseMove(e, i));
-            slotDiv.addEventListener('mousedown', (e) => handleSlotClick(i, e));
-        }
+        } else { slotDiv.addEventListener('mousemove', (e) => handleSlotMouseMove(e, i)); slotDiv.addEventListener('mousedown', (e) => handleSlotClick(i, e)); }
         slotDiv.addEventListener('mouseleave', () => document.getElementById('tooltip').style.display='none');
         if(item) { slotDiv.innerHTML = `<div class="item-icon" style="background-image: url('${ITEMS[item.id].src}')"></div><div class="item-count">${item.count > 1 && gameMode !== 'creative' ? item.count : ''}</div>`; }
         container.appendChild(slotDiv);
@@ -417,9 +367,7 @@ document.addEventListener('mousemove', (e) => { if(cursorItem) { const d = docum
 function handleSlotMouseMove(e, idx) {
     if (gameMode === 'creative' || currentChest) return; 
     const item = inventory[idx]; const tooltip = document.getElementById('tooltip');
-    if(item && !cursorItem) { tooltip.style.display = 'block'; tooltip.style.left = (e.clientX + 15) + 'px'; tooltip.style.top = (e.clientY - 15) + 'px'; tooltip.innerText = ITEMS[item.id].name; } 
-    else { tooltip.style.display = 'none'; }
-
+    if(item && !cursorItem) { tooltip.style.display = 'block'; tooltip.style.left = (e.clientX + 15) + 'px'; tooltip.style.top = (e.clientY - 15) + 'px'; tooltip.innerText = ITEMS[item.id].name; } else { tooltip.style.display = 'none'; }
     if(isRightMouseDown && cursorItem && !paintedSlots.has(idx)) {
         const target = inventory[idx];
         if(!target) { inventory[idx] = { ...cursorItem, count: 1 }; cursorItem.count--; paintedSlots.add(idx); } 
@@ -431,13 +379,10 @@ function handleSlotMouseMove(e, idx) {
 
 function clickSlotLogic(getFn, setFn, idx, e) {
     const clickedItem = getFn(idx);
-    if(cursorItem && !clickedItem) {
-        if(e.button === 2) { setFn(idx, { id: cursorItem.id, count: 1 }); cursorItem.count--; if(cursorItem.count === 0) cursorItem = null; } else { setFn(idx, cursorItem); cursorItem = null; }
-    } else if(!cursorItem && clickedItem) {
-        if(e.button === 2) { const half = Math.ceil(clickedItem.count / 2); cursorItem = { ...clickedItem, count: half }; clickedItem.count -= half; if(clickedItem.count === 0) setFn(idx, null); } else { cursorItem = clickedItem; setFn(idx, null); }
+    if(cursorItem && !clickedItem) { if(e.button === 2) { setFn(idx, { id: cursorItem.id, count: 1 }); cursorItem.count--; if(cursorItem.count === 0) cursorItem = null; } else { setFn(idx, cursorItem); cursorItem = null; }
+    } else if(!cursorItem && clickedItem) { if(e.button === 2) { const half = Math.ceil(clickedItem.count / 2); cursorItem = { ...clickedItem, count: half }; clickedItem.count -= half; if(clickedItem.count === 0) setFn(idx, null); } else { cursorItem = clickedItem; setFn(idx, null); }
     } else if(cursorItem && clickedItem) {
-        if(cursorItem.id === clickedItem.id) {
-            if(e.button === 2) { if(clickedItem.count < 64) { clickedItem.count++; cursorItem.count--; if(cursorItem.count === 0) cursorItem = null; } } else { const space = 64 - clickedItem.count; const toAdd = Math.min(space, cursorItem.count); clickedItem.count += toAdd; cursorItem.count -= toAdd; if(cursorItem.count === 0) cursorItem = null; }
+        if(cursorItem.id === clickedItem.id) { if(e.button === 2) { if(clickedItem.count < 64) { clickedItem.count++; cursorItem.count--; if(cursorItem.count === 0) cursorItem = null; } } else { const space = 64 - clickedItem.count; const toAdd = Math.min(space, cursorItem.count); clickedItem.count += toAdd; cursorItem.count -= toAdd; if(cursorItem.count === 0) cursorItem = null; }
         } else { const temp = clickedItem; setFn(idx, cursorItem); cursorItem = temp; }
     }
 }
@@ -447,44 +392,33 @@ function handleSlotClick(idx, e) {
     if(idx === 45) { 
         const clickedItem = inventory[45];
         if(clickedItem) {
-            if (e.shiftKey) {
-                while(true) { if (!addItemToInventory(clickedItem.id, clickedItem.count)) break; consumeIngredients(); checkCrafting(); if (!inventory[45]) break; }
-            } else {
-                if(!cursorItem) { cursorItem = { ...clickedItem }; consumeIngredients(); checkCrafting(); } else if (cursorItem.id === clickedItem.id && cursorItem.count + clickedItem.count <= 64) { cursorItem.count += clickedItem.count; consumeIngredients(); checkCrafting(); }
-            }
-        }
-        renderInventory(); return;
+            if (e.shiftKey) { while(true) { if (!addItemToInventory(clickedItem.id, clickedItem.count)) break; consumeIngredients(); checkCrafting(); if (!inventory[45]) break; } } 
+            else { if(!cursorItem) { cursorItem = { ...clickedItem }; consumeIngredients(); checkCrafting(); } else if (cursorItem.id === clickedItem.id && cursorItem.count + clickedItem.count <= 64) { cursorItem.count += clickedItem.count; consumeIngredients(); checkCrafting(); } }
+        } renderInventory(); return;
     }
-    clickSlotLogic((i)=>inventory[i], (i,v)=>inventory[i]=v, idx, e);
-    if(idx >= 36) checkCrafting(); renderInventory();
+    clickSlotLogic((i)=>inventory[i], (i,v)=>inventory[i]=v, idx, e); if(idx >= 36) checkCrafting(); renderInventory();
 }
 
 function handleChestSlotClick(idx, e, combinedArray, neighbor) {
-    if(!currentChest) return;
-    const isSecondChest = idx >= 27; const targetInv = isSecondChest ? neighbor.userData.inventory : currentChest.userData.inventory; const targetIdx = isSecondChest ? idx - 27 : idx;
+    if(!currentChest) return; const isSecondChest = idx >= 27; const targetInv = isSecondChest ? neighbor.userData.inventory : currentChest.userData.inventory; const targetIdx = isSecondChest ? idx - 27 : idx;
     clickSlotLogic(() => targetInv[targetIdx], (i, v) => targetInv[targetIdx] = v, idx, e); renderInventory(); 
 }
 
 function handleFurnaceSlotClick(idx, e) {
-    if(!currentFurnace) return;
-    const data = currentFurnace.userData.furnace; const keys = ['input', 'fuel', 'output']; const key = keys[idx];
+    if(!currentFurnace) return; const data = currentFurnace.userData.furnace; const keys = ['input', 'fuel', 'output']; const key = keys[idx];
     if (idx === 2) {
-        if(data.output) {
-            if(!cursorItem) { cursorItem = data.output; data.output = null; }
-            else if(cursorItem.id === data.output.id) { const space = 64 - cursorItem.count; const toTake = Math.min(space, data.output.count); cursorItem.count += toTake; data.output.count -= toTake; if(data.output.count <= 0) data.output = null; }
-        }
-        renderInventory(); return;
+        if(data.output) { if(!cursorItem) { cursorItem = data.output; data.output = null; } else if(cursorItem.id === data.output.id) { const space = 64 - cursorItem.count; const toTake = Math.min(space, data.output.count); cursorItem.count += toTake; data.output.count -= toTake; if(data.output.count <= 0) data.output = null; } } renderInventory(); return;
     }
     clickSlotLogic(() => data[key], (i, v) => data[key] = v, idx, e); renderInventory();
 }
 
 // --- 3. 3D GAME & WORLD ---
 let camera, scene, renderer, controls;
-let hudScene, hudCamera, hudMeshes = [];
+let hudScene, hudCamera, hudMeshes =[];
 let handMesh, offHandMesh, highlightMesh;
 const objects =[]; const worldMap = new Map(); const droppedItems =[];
 let moveForward=false, moveBackward=false, moveLeft=false, moveRight=false, moveUp=false, moveDown=false, canJump=false;
-let prevTime = performance.now(); const velocity = new THREE.Vector3(); const playerDimensions = { w: 10, h: 32 }; 
+let prevTime = performance.now(); const velocity = new THREE.Vector3();
 
 function createPlayerModel() {
     if(playerGroup) controls.getObject().remove(playerGroup);
@@ -569,7 +503,8 @@ function init() {
         if(!isInventoryOpen && !isDead && !currentChest && !currentFurnace && !isChatOpen) { isPaused = true; document.getElementById('pause-menu').style.display = 'flex'; document.getElementById('hud').style.display = 'none'; }
     });
     scene.add(controls.getObject());
-    document.addEventListener('keydown', onKeyDown); document.addEventListener('keyup', onKeyUp); document.addEventListener('mousedown', onMouseClick); document.addEventListener('wheel', onScroll);
+    document.addEventListener('keydown', onKeyDown); document.addEventListener('keyup', onKeyUp); 
+    document.addEventListener('wheel', onScroll);
 
     highlightMesh = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK+0.2, BLOCK+0.2, BLOCK+0.2)), new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2 })); scene.add(highlightMesh);
 
@@ -586,25 +521,28 @@ function updateHudMeshes() {
     for(let i=0; i<9; i++) {
         const item = inventory[i];
         if(item) {
-            let mesh = buildItemMesh(item); mesh.scale.set(40, 40, 40); 
+            let mesh = buildItemMesh(item); 
             if(ITEMS[item.id].block) { mesh.rotation.x = Math.PI / 6; mesh.rotation.y = Math.PI / 4; } else { mesh.rotation.x = 0; mesh.rotation.y = 0; }
+            mesh.scale.set(40, 40, 40); 
             mesh.position.set(startX + (i * slotWidth), yPos, 0); hudScene.add(mesh); hudMeshes.push(mesh);
         }
     }
 }
 
 function saveGame() {
-    const worldData = [];
-    for (const [key, val] of worldMap.entries()) {
-        const o = { k: key, type: val.type, x: val.x, y: val.y, z: val.z };
-        if(!val.isInstanced && val.mesh) {
-            if(val.mesh.userData.inventory) o.inv = val.mesh.userData.inventory; if(val.mesh.userData.furnace) o.furnace = val.mesh.userData.furnace;
-            o.isOpen = val.mesh.userData.isOpen || false; o.rot = val.mesh.rotation.y;
+    const worldData =[];
+    for (const val of worldMap.values()) {
+        const o = { k: getKey(val.x, val.y, val.z), type: val.type, x: val.x, y: val.y, z: val.z, rot: val.rot || 0, level: val.level || 0 };
+        if(!SIMPLE_BLOCKS.has(val.type) && val.mesh) {
+            if(val.mesh.userData.inventory) o.inv = val.mesh.userData.inventory; 
+            if(val.mesh.userData.furnace) o.furnace = val.mesh.userData.furnace;
+            o.isOpen = val.mesh.userData.isOpen || false; 
+            o.rot = val.mesh.rotation.y;
         }
         worldData.push(o);
     }
     const saveState = { player: { pos: controls.getObject().position, rot: controls.getObject().rotation, health: playerHealth, mode: gameMode, username: username }, settings: { chatKey: chatKey }, inventory: inventory, offHand: offHandItem, world: worldData };
-    localStorage.setItem('mc_save_v1', JSON.stringify(saveState));
+    try { localStorage.setItem('mc_save_v1', JSON.stringify(saveState)); } catch(e) { console.warn("World too large to save to localStorage!"); }
 }
 
 function loadGame() {
@@ -615,15 +553,14 @@ function loadGame() {
     document.getElementById('btn-chat-key').innerText = `Chat Key: ${chatKey.replace('Key','')}`;
     for(let i=0; i<46; i++) inventory[i] = state.inventory[i]; offHandItem = state.offHand; renderInventory();
 
-    objects.forEach(o => { scene.remove(o); if(o.geometry && o.geometry !== boxGeometry && o.geometry !== planeGeometry) o.geometry.dispose(); });
-    objects.length = 0; worldMap.clear(); activeFurnaces.clear();
-    Object.values(imManager.meshes).forEach(im => { scene.remove(im); im.dispose(); }); imManager.meshes={}; imManager.freeIds={}; imManager.counts={};
+    worldMap.clear(); activeFurnaces.clear();
+    for(let chunk of chunks.values()) { if(chunk.isMeshed) { for(let im of chunk.meshes.values()) { scene.remove(im); im.dispose(); } for(let b of chunk.blocks.values()) { if(!SIMPLE_BLOCKS.has(b.type) && b.mesh) scene.remove(b.mesh); } } } chunks.clear();
 
     state.world.forEach(b => {
         if(b.type === 'oak_door_bottom') b.type = 'oak_door_b';
-        placeBlock(b.x, b.y, b.z, b.type, undefined, b.rot);
+        placeBlock(b.x, b.y, b.z, b.type, b.level, b.rot);
         const obj = worldMap.get(getKey(b.x, b.y, b.z));
-        if(obj && !obj.isInstanced && obj.mesh) {
+        if(obj && !SIMPLE_BLOCKS.has(obj.type) && obj.mesh) {
             if (b.inv) obj.mesh.userData.inventory = b.inv;
             if (b.furnace) { obj.mesh.userData.furnace = b.furnace; activeFurnaces.add(obj.mesh); }
             if (b.isOpen && (b.type.includes('door') || b.type.includes('trapdoor'))) {
@@ -631,6 +568,8 @@ function loadGame() {
                 if (b.type === 'oak_trapdoor') { obj.mesh.rotation.x = -Math.PI/2; obj.mesh.position.y += BLOCK*0.4; } else { obj.mesh.rotation.y = Math.PI/2; obj.mesh.position.x = obj.mesh.userData.baseX + BLOCK*0.4; obj.mesh.position.z = obj.mesh.userData.baseZ + BLOCK*0.4; }
             }
         }
+        const cx = Math.floor(b.x / (CHUNK_SIZE * BLOCK)); const cz = Math.floor(b.z / (CHUNK_SIZE * BLOCK));
+        getChunk(cx, cz).isGenerated = true; // Prevents natural generation from overwriting loaded chunks
     }); return true;
 }
 
@@ -664,9 +603,13 @@ async function startGame(mode) {
     document.getElementById('death-screen').style.display = 'none'; document.getElementById('status-bars').style.opacity = mode === 'creative' ? '0' : '1'; document.getElementById('xp-bar-bg').style.opacity = mode === 'creative' ? '0' : '1';
     
     if (!loadGame()) {
-        initInventory(mode); playerHealth = 10; updateHearts(); await generateWorld();
+        initInventory(mode); playerHealth = 10; updateHearts(); 
+        document.getElementById('loading-screen').style.display = 'flex';
+        await new Promise(r => setTimeout(r, 50)); 
+        await ensureChunksAroundPlayer(0, 0, true);
         const spawnH = pseudoNoise(0, 0); controls.getObject().position.set(0, (spawnH * BLOCK) + BLOCK + 5, 0);
-    } else updateHearts();
+    } else { updateHearts(); await ensureChunksAroundPlayer(controls.getObject().position.x, controls.getObject().position.z, true); }
+    document.getElementById('loading-screen').style.display = 'none';
     updateHand(); createPlayerModel(); if (!document.pointerLockElement) controls.lock();
 }
 
@@ -685,46 +628,92 @@ function checkVisibility(x, y, z) {
     for(let k of keys) { const n = worldMap.get(k); if (!n) return true; const info = ITEMS[n.type]; if (info.transparent || !info.block) return true; } return false;
 }
 
-function updateBlockAndNeighborsVisibility(x, y, z) {
-    const target = worldMap.get(getKey(x, y, z));
-    if(target) { const isVis = checkVisibility(x, y, z); if (target.isInstanced) imManager.setVisibility(target.type, target.instanceId, target.x, target.y, target.z, isVis); else target.mesh.visible = isVis; }
-    const offsets =[ {x:BLOCK,y:0,z:0}, {x:-BLOCK,y:0,z:0}, {x:0,y:BLOCK,z:0}, {x:0,y:-BLOCK,z:0}, {x:0,y:0,z:BLOCK}, {x:0,y:0,z:-BLOCK} ];
-    for(let o of offsets) {
-        const n = worldMap.get(getKey(x+o.x, y+o.y, z+o.z));
-        if(n) { const nVis = checkVisibility(n.x, n.y, n.z); if (n.isInstanced) imManager.setVisibility(n.type, n.instanceId, n.x, n.y, n.z, nVis); else n.mesh.visible = nVis; }
-    }
+function computeChunkVisibility(chunk) {
+    for (let b of chunk.blocks.values()) b.visible = checkVisibility(b.x, b.y, b.z);
 }
 
-async function generateWorld() {
-    const loadingScreen = document.getElementById('loading-screen'); const loadingBar = document.getElementById('loading-bar-fill'); loadingScreen.style.display = 'flex';
-    objects.forEach(o => { scene.remove(o); if(o.geometry && o.geometry !== boxGeometry && o.geometry !== planeGeometry) o.geometry.dispose(); });
-    objects.length = 0; worldMap.clear(); activeFurnaces.clear();
-    Object.values(imManager.meshes).forEach(im => { scene.remove(im); im.dispose(); }); imManager.meshes={}; imManager.freeIds={}; imManager.counts={};
+function updateBlockAndNeighborsVisibility(x, y, z) {
+    const checkAndSet = (px, py, pz) => {
+        const b = worldMap.get(getKey(px, py, pz));
+        if (b) { b.visible = checkVisibility(px, py, pz); const chunk = getChunk(Math.floor(px / (CHUNK_SIZE * BLOCK)), Math.floor(pz / (CHUNK_SIZE * BLOCK))); chunk.dirty = true; }
+    };
+    checkAndSet(x, y, z); checkAndSet(x+BLOCK, y, z); checkAndSet(x-BLOCK, y, z); checkAndSet(x, y+BLOCK, z); checkAndSet(x, y-BLOCK, z); checkAndSet(x, y, z+BLOCK); checkAndSet(x, y, z-BLOCK);
+}
 
-    const range = 20; const totalRows = range * 2; let rowsProcessed = 0;
-    for(let x=-range; x<range; x++) {
-        if (rowsProcessed % 2 === 0) { await new Promise(r => setTimeout(r, 0)); loadingBar.style.width = Math.round((rowsProcessed / totalRows) * 100) + "%"; }
-        rowsProcessed++;
-        for(let z=-range; z<range; z++) {
-            const wx = x*BLOCK, wz = z*BLOCK, h = Math.floor(pseudoNoise(x, z)), surfaceY = h * BLOCK;
-            let topBlock = 'grass', midBlock = 'dirt'; if (h < -2) { topBlock = 'sand'; midBlock = 'sand'; }
-            placeBlock(wx, surfaceY, wz, topBlock); placeBlock(wx, surfaceY - BLOCK, wz, midBlock);
-            for(let d=2; d<8; d++) { let type = 'stone'; if(Math.random() < 0.05) type = 'coal_ore'; if(d > 4 && Math.random() < 0.03) type = 'iron_ore'; placeBlock(wx, surfaceY - (d*BLOCK), wz, type); }
-            placeBlock(wx, -120, wz, 'obsidian'); 
-            if (topBlock === 'grass' && Math.random() < 0.015 && x > -range+2 && x < range-2 && z > -range+2 && z < range-2) placeTree(wx, surfaceY + BLOCK, wz);
+async function ensureChunksAroundPlayer(px, pz, isInitialLoad = false) {
+    const pcx = Math.floor(px / (CHUNK_SIZE * BLOCK)); const pcz = Math.floor(pz / (CHUNK_SIZE * BLOCK));
+    const needed =[];
+    for (let x = -RENDER_DIST; x <= RENDER_DIST; x++) { for (let z = -RENDER_DIST; z <= RENDER_DIST; z++) needed.push({cx: pcx + x, cz: pcz + z}); }
+    
+    let generatedAny = false; let count = 0; const loadingBar = document.getElementById('loading-bar-fill');
+    
+    for (let c of needed) {
+        const chunk = getChunk(c.cx, c.cz);
+        if (!chunk.isGenerated) {
+            generateChunkData(c.cx, c.cz); chunk.isGenerated = true; generatedAny = true;
+            if (isInitialLoad) { count++; if (count % 2 === 0) { loadingBar.style.width = Math.round((count / needed.length) * 100) + "%"; await new Promise(r => setTimeout(r, 0)); } }
         }
     }
-    for (const val of worldMap.values()) {
-        const isVis = checkVisibility(val.x, val.y, val.z);
-        if (val.isInstanced) imManager.setVisibility(val.type, val.instanceId, val.x, val.y, val.z, isVis); else val.mesh.visible = isVis;
+
+    if (generatedAny) { for (let c of needed) { const chunk = getChunk(c.cx, c.cz); if (!chunk.isMeshed || chunk.dirty) computeChunkVisibility(chunk); } }
+    for (let c of needed) { const chunk = getChunk(c.cx, c.cz); if (chunk.dirty || !chunk.isMeshed) buildChunkMeshes(chunk); }
+
+    for (let [k, chunk] of chunks.entries()) {
+        if (Math.abs(chunk.cx - pcx) > RENDER_DIST + 1 || Math.abs(chunk.cz - pcz) > RENDER_DIST + 1) {
+            if (chunk.isMeshed) {
+                for (let im of chunk.meshes.values()) { scene.remove(im); im.dispose(); } chunk.meshes.clear();
+                for (let b of chunk.blocks.values()) { if (!SIMPLE_BLOCKS.has(b.type) && b.mesh) scene.remove(b.mesh); }
+                chunk.isMeshed = false; chunk.dirty = true; 
+            }
+        }
     }
-    loadingScreen.style.display = 'none';
 }
 
-function placeTree(x, y, z) {
-    for(let i=0; i<5; i++) placeBlock(x, y + (i*BLOCK), z, 'oak_log');
-    for(let lx=-2; lx<=2; lx++) { for(let lz=-2; lz<=2; lz++) { for(let ly=2; ly<=4; ly++) { if (Math.abs(lx) === 2 && Math.abs(lz) === 2 && Math.random() < 0.4) continue; if (lx===0 && lz===0 && ly<4) continue; placeBlock(x+(lx*BLOCK), y+(ly*BLOCK), z+(lz*BLOCK), 'oak_leaves'); } } }
-    placeBlock(x, y + (5*BLOCK), z, 'oak_leaves'); 
+function generateChunkData(cx, cz) {
+    for(let lx = 0; lx < CHUNK_SIZE; lx++) {
+        for(let lz = 0; lz < CHUNK_SIZE; lz++) {
+            const wx = (cx * CHUNK_SIZE + lx) * BLOCK; const wz = (cz * CHUNK_SIZE + lz) * BLOCK;
+            const h = Math.floor(pseudoNoise(wx/BLOCK, wz/BLOCK)); const surfaceY = h * BLOCK;
+            let topBlock = 'grass', midBlock = 'dirt'; if (h < -2) { topBlock = 'sand'; midBlock = 'sand'; }
+            
+            placeBlockFast(wx, surfaceY, wz, topBlock); placeBlockFast(wx, surfaceY - BLOCK, wz, midBlock);
+            for(let d=2; d<8; d++) { let type = 'stone'; if(Math.random() < 0.05) type = 'coal_ore'; if(d > 4 && Math.random() < 0.03) type = 'iron_ore'; placeBlockFast(wx, surfaceY - (d*BLOCK), wz, type); }
+            placeBlockFast(wx, -120, wz, 'obsidian'); 
+            if (topBlock === 'grass' && Math.random() < 0.015) {
+                for(let i=0; i<5; i++) placeBlockFast(wx, surfaceY + BLOCK + (i*BLOCK), wz, 'oak_log');
+                for(let ix=-2; ix<=2; ix++) { for(let iz=-2; iz<=2; iz++) { for(let iy=2; iy<=4; iy++) { if (Math.abs(ix) === 2 && Math.abs(iz) === 2 && Math.random() < 0.4) continue; if (ix===0 && iz===0 && iy<4) continue; placeBlockFast(wx+(ix*BLOCK), surfaceY+BLOCK+(iy*BLOCK), wz+(iz*BLOCK), 'oak_leaves'); } } }
+                placeBlockFast(wx, surfaceY + BLOCK + (5*BLOCK), wz, 'oak_leaves'); 
+            }
+        }
+    }
+}
+
+function placeBlockFast(x, y, z, type) {
+    const key = getKey(x, y, z); if(worldMap.has(key)) return; 
+    const blockData = { type: type, x:x, y:y, z:z, level: 0, visible: true };
+    worldMap.set(key, blockData);
+    const chunk = getChunk(Math.floor(x / (CHUNK_SIZE * BLOCK)), Math.floor(z / (CHUNK_SIZE * BLOCK))); chunk.blocks.set(key, blockData); chunk.dirty = true;
+}
+
+function buildChunkMeshes(chunk) {
+    for (let im of chunk.meshes.values()) { scene.remove(im); im.dispose(); } chunk.meshes.clear();
+    const counts = {};
+    for (let b of chunk.blocks.values()) { if (b.visible && SIMPLE_BLOCKS.has(b.type)) counts[b.type] = (counts[b.type] || 0) + 1; }
+
+    const indices = {}; const dummy = new THREE.Object3D();
+    for (let type in counts) {
+        const im = new THREE.InstancedMesh(boxGeometry, getBlockMaterial(type), counts[type]); im.frustumCulled = true; im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        chunk.meshes.set(type, im); scene.add(im); indices[type] = 0;
+    }
+
+    for (let b of chunk.blocks.values()) {
+        if (!b.visible && SIMPLE_BLOCKS.has(b.type)) continue;
+        if (SIMPLE_BLOCKS.has(b.type)) { dummy.position.set(b.x, b.y, b.z); dummy.updateMatrix(); chunk.meshes.get(b.type).setMatrixAt(indices[b.type]++, dummy.matrix); } 
+        else if (b.mesh) { if (!scene.children.includes(b.mesh)) scene.add(b.mesh); b.mesh.visible = b.visible; }
+    }
+
+    for (let im of chunk.meshes.values()) { im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere(); }
+    chunk.isMeshed = true; chunk.dirty = false;
 }
 
 function getKey(x, y, z) { return `${Math.round(x)},${Math.round(y)},${Math.round(z)}`; }
@@ -733,20 +722,16 @@ function placeBlock(x, y, z, type, level, rotation) {
     const key = getKey(x, y, z);
     if(worldMap.has(key)) removeBlockFromData(worldMap.get(key));
 
-    const flowLevel = level !== undefined ? level : 0;
-    const isInstanced = SIMPLE_BLOCKS.has(type);
-    
-    if (isInstanced) {
-        const instanceId = imManager.add(type, x, y, z);
-        worldMap.set(key, { type: type, isInstanced: true, instanceId: instanceId, x:x, y:y, z:z, level: flowLevel });
-    } else {
+    const blockData = { type: type, x:x, y:y, z:z, level: level !== undefined ? level : 0, visible: true };
+
+    if (!SIMPLE_BLOCKS.has(type)) {
         let mesh; let mat = getBlockMaterial(type);
         if (type === 'fire') { mesh = new THREE.Group(); const m1 = new THREE.Mesh(planeGeometry, mat); m1.rotation.y = Math.PI/4; const m2 = new THREE.Mesh(planeGeometry, mat); m2.rotation.y = -Math.PI/4; mesh.add(m1, m2); mesh.position.set(x, y, z); mesh.userData = { type: type, health: 2 }; } 
         else if (type === 'oak_door_b' || type === 'oak_door_top') { mesh = new THREE.Mesh(new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK * 0.2), mat); mesh.position.set(x, y, z - (BLOCK*0.4)); mesh.userData = { type: type, isOpen: false, baseZ: z - (BLOCK*0.4), baseX: x }; } 
         else if (type === 'oak_trapdoor') { mesh = new THREE.Mesh(new THREE.BoxGeometry(BLOCK, BLOCK * 0.2, BLOCK), mat); mesh.position.set(x, y - (BLOCK*0.4), z); mesh.userData = { type: type, isOpen: false }; } 
         else if (type === 'nether_portal') { mesh = new THREE.Mesh(new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK*0.1), mat); mesh.position.set(x, y, z); mesh.userData = { type: type }; } 
         else {
-            let geo = boxGeometry; if (type === 'lava' || type === 'lava_flow') geo = new THREE.BoxGeometry(BLOCK, BLOCK * (flowLevel===0?1:0.5), BLOCK);
+            let geo = boxGeometry; if (type === 'lava' || type === 'lava_flow') geo = new THREE.BoxGeometry(BLOCK, BLOCK * (blockData.level===0?1:0.5), BLOCK);
             mesh = new THREE.Mesh(geo, mat);
             if(type.includes('lava')) mesh.position.set(x, y - (BLOCK/2) + (geo.parameters.height/2), z); else mesh.position.set(x, y, z);
             if (rotation !== undefined && (type === 'furnace' || type === 'chest')) mesh.rotation.y = rotation;
@@ -754,9 +739,12 @@ function placeBlock(x, y, z, type, level, rotation) {
             if (type === 'chest') mesh.userData.inventory = new Array(27).fill(null);
             if (type === 'furnace') { mesh.userData.furnace = { input: null, fuel: null, output: null, cookTime: 0, burnTime: 0, maxBurnTime: 0 }; activeFurnaces.add(mesh); }
         }
+        blockData.mesh = mesh; blockData.rot = rotation;
         scene.add(mesh); objects.push(mesh);
-        worldMap.set(key, { type: type, isInstanced: false, mesh: mesh, x:x, y:y, z:z, level: flowLevel });
     }
+    
+    worldMap.set(key, blockData);
+    const chunk = getChunk(Math.floor(x / (CHUNK_SIZE * BLOCK)), Math.floor(z / (CHUNK_SIZE * BLOCK))); chunk.blocks.set(key, blockData); chunk.dirty = true;
 
     if (type === 'fire') checkPortal(x, y, z);
     if (!document.getElementById('loading-screen').style.display.includes('flex')) updateBlockAndNeighborsVisibility(x, y, z);
@@ -782,7 +770,7 @@ function checkPortal(x, y, z) {
                 for(let h=0; h<validHeight; h++) {
                     for(let i=-(minX-1); i<maxX; i++) {
                         const px = x + (i*dir.dx*BLOCK), py = y + (h*BLOCK), pz = z + (i*dir.dz*BLOCK), k = getKey(px, py, pz);
-                        if (!worldMap.has(k) || worldMap.get(k).type === 'fire') { placeBlock(px, py, pz, 'nether_portal'); if(dir.dx === 0 && !worldMap.get(k).isInstanced) worldMap.get(k).mesh.rotation.y = Math.PI/2; }
+                        if (!worldMap.has(k) || worldMap.get(k).type === 'fire') { placeBlock(px, py, pz, 'nether_portal'); if(dir.dx === 0 && !SIMPLE_BLOCKS.has(worldMap.get(k).type)) worldMap.get(k).mesh.rotation.y = Math.PI/2; }
                     }
                 } return; 
             }
@@ -794,19 +782,21 @@ function removeBlockFromData(blockData) {
     if (!blockData) return;
     const px = blockData.x, py = blockData.y, pz = blockData.z, type = blockData.type;
     
-    if (blockData.isInstanced) { imManager.remove(type, blockData.instanceId); } 
-    else {
+    if (!SIMPLE_BLOCKS.has(type) && blockData.mesh) {
         const target = blockData.mesh; scene.remove(target);
         if(target.geometry && target.geometry !== boxGeometry && target.geometry !== planeGeometry) target.geometry.dispose();
         const idx = objects.indexOf(target); if(idx > -1) objects.splice(idx, 1); activeFurnaces.delete(target);
     }
+    
+    const chunk = getChunk(Math.floor(px / (CHUNK_SIZE * BLOCK)), Math.floor(pz / (CHUNK_SIZE * BLOCK))); 
+    chunk.blocks.delete(getKey(px, py, pz)); chunk.dirty = true;
     worldMap.delete(getKey(px, py, pz));
 
     if(gameMode === 'survival') {
         const dropPos = new THREE.Vector3(px, py, pz); const vel = new THREE.Vector3((Math.random()-0.5)*10, 20, (Math.random()-0.5)*10);
         let dropId = type; if(type==='stone') dropId='cobblestone'; if(type==='coal_ore') dropId='coal'; if(type==='iron_ore') dropId='raw_iron'; if(type==='diamond_ore') dropId='diamond'; if(type==='grass') dropId='dirt'; if(type==='oak_door_top' || type==='oak_door_b') dropId='oak_door'; if(type==='oak_log_tb') dropId='oak_log';
         if(dropId && ITEMS[dropId]) droppedItems.push(new DroppedItem(dropId, 1, dropPos, vel));
-        if (!blockData.isInstanced && blockData.mesh) {
+        if (blockData.mesh) {
             const target = blockData.mesh;
             if(target.userData.inventory) target.userData.inventory.forEach(i => { if(i) droppedItems.push(new DroppedItem(i.id, i.count, dropPos, vel.clone())); });
             if(target.userData.furnace) { const f = target.userData.furnace; if(f.input) droppedItems.push(new DroppedItem(f.input.id, f.input.count, dropPos, vel.clone())); if(f.fuel) droppedItems.push(new DroppedItem(f.fuel.id, f.fuel.count, dropPos, vel.clone())); if(f.output) droppedItems.push(new DroppedItem(f.output.id, f.output.count, dropPos, vel.clone())); }
@@ -822,14 +812,12 @@ function checkGravityTrigger(x, y, z) {
     }
 }
 
-// CUSTOM NATIVE RAYCASTER (Ultra-fast, doesn't use massive Three.js graph logic)
 function customRaycast(raycaster, maxDist) {
-    const origin = raycaster.ray.origin; const dir = raycaster.ray.direction;
+    const origin = raycaster.ray.origin; const dummyBox = new THREE.Box3();
     let closestHit = null; let minDist = maxDist;
     const minX = Math.floor((origin.x - maxDist)/BLOCK), maxX = Math.ceil((origin.x + maxDist)/BLOCK);
     const minY = Math.floor((origin.y - maxDist)/BLOCK), maxY = Math.ceil((origin.y + maxDist)/BLOCK);
     const minZ = Math.floor((origin.z - maxDist)/BLOCK), maxZ = Math.ceil((origin.z + maxDist)/BLOCK);
-    const dummyBox = new THREE.Box3();
     
     for(let x = minX; x <= maxX; x++) {
         for(let y = minY; y <= maxY; y++) {
@@ -837,8 +825,7 @@ function customRaycast(raycaster, maxDist) {
                 const blockData = worldMap.get(getKey(x*BLOCK, y*BLOCK, z*BLOCK));
                 if (blockData) {
                     if (['lava','lava_flow','fire','nether_portal','air'].includes(blockData.type)) continue;
-                    
-                    if (!blockData.isInstanced && (blockData.type.includes('door') || blockData.type === 'oak_trapdoor')) {
+                    if (!SIMPLE_BLOCKS.has(blockData.type) && (blockData.type.includes('door') || blockData.type === 'oak_trapdoor')) {
                         const isOpen = blockData.mesh.userData.isOpen; if (isOpen) continue;
                         if (blockData.type === 'oak_trapdoor') { dummyBox.min.set(blockData.x - BLOCK/2, blockData.y - BLOCK/2, blockData.z - BLOCK/2); dummyBox.max.set(blockData.x + BLOCK/2, blockData.y - BLOCK/2 + (BLOCK*0.2), blockData.z + BLOCK/2); } 
                         else { dummyBox.min.set(blockData.x - BLOCK/2, blockData.y - BLOCK/2, blockData.z - BLOCK/2); dummyBox.max.set(blockData.x + BLOCK/2, blockData.y + BLOCK/2, blockData.z + BLOCK/2); }
@@ -856,8 +843,7 @@ function customRaycast(raycaster, maxDist) {
                 }
             }
         }
-    }
-    return closestHit;
+    } return closestHit;
 }
 
 function checkCollision(pos, isHorizontal, dim) {
@@ -874,7 +860,7 @@ function checkCollision(pos, isHorizontal, dim) {
                 if(blockData) {
                     const type = blockData.type; if(['fire','lava','nether_portal'].includes(type)) continue; 
                     let bBox;
-                    if (!blockData.isInstanced && (type.includes('door') || type === 'oak_trapdoor')) {
+                    if (!SIMPLE_BLOCKS.has(type) && (type.includes('door') || type === 'oak_trapdoor')) {
                         const isOpen = blockData.mesh.userData.isOpen; if (isOpen) continue; 
                         if (type === 'oak_trapdoor') bBox = new THREE.Box3( new THREE.Vector3(x*BLOCK - BLOCK/2, y*BLOCK - BLOCK/2, z*BLOCK - BLOCK/2), new THREE.Vector3(x*BLOCK + BLOCK/2, y*BLOCK - BLOCK/2 + (BLOCK*0.2), z*BLOCK + BLOCK/2) );
                         else bBox = new THREE.Box3( new THREE.Vector3(x*BLOCK - BLOCK/2, y*BLOCK - BLOCK/2, z*BLOCK - BLOCK/2), new THREE.Vector3(x*BLOCK + BLOCK/2, y*BLOCK + BLOCK/2, z*BLOCK + BLOCK/2) );
@@ -935,6 +921,9 @@ function throwItem() {
     }
 }
 
+let lastPlayerChunkX = -999, lastPlayerChunkZ = -999;
+let isBreaking = false, breakTimer = 0, breakTargetKey = null;
+
 function animate() {
     requestAnimationFrame(animate); if(isPaused || isTitleScreen) return;
     const time = performance.now(); let delta = (time - prevTime) / 1000;
@@ -943,11 +932,25 @@ function animate() {
     lastFrameTime = time; prevTime = time;
     if(showFPS) document.getElementById('fps-display').innerText = `FPS: ${Math.round(1 / delta)}`;
 
+    const px = controls.getObject().position.x; const pz = controls.getObject().position.z;
+    const pcx = Math.floor(px / (CHUNK_SIZE * BLOCK)); const pcz = Math.floor(pz / (CHUNK_SIZE * BLOCK));
+    if (pcx !== lastPlayerChunkX || pcz !== lastPlayerChunkZ) { lastPlayerChunkX = pcx; lastPlayerChunkZ = pcz; ensureChunksAroundPlayer(px, pz); }
+
+    for (let chunk of chunks.values()) { if (chunk.isMeshed && chunk.dirty) buildChunkMeshes(chunk); }
+
     updateFurnaces(delta); if(currentFurnace) renderFurnace();
-    
     for (let i = activeChatMessages.length - 1; i >= 0; i--) { const msg = activeChatMessages[i]; if (Date.now() - msg.time > CHAT_TIMEOUT) { msg.el.style.opacity = '0'; if (Date.now() - msg.time > CHAT_TIMEOUT + 500) { if (msg.el.parentNode) msg.el.parentNode.removeChild(msg.el); activeChatMessages.splice(i, 1); } } }
 
-    if (hudMeshes.length > 0) { let meshIndex = 0; for(let i=0; i<9; i++) { if(inventory[i]) { if(i === selectedSlot) hudMeshes[meshIndex].rotation.y += delta * 1.5; else hudMeshes[meshIndex].rotation.y = ITEMS[inventory[i].id].block ? Math.PI / 4 : 0; meshIndex++; } } }
+    if (hudMeshes.length > 0) {
+        let meshIndex = 0;
+        for(let i=0; i<9; i++) {
+            if(inventory[i]) {
+                hudMeshes[meshIndex].rotation.y = ITEMS[inventory[i].id].block ? Math.PI / 4 : 0;
+                if(i === selectedSlot) hudMeshes[meshIndex].scale.set(45, 45, 45); else hudMeshes[meshIndex].scale.set(40, 40, 40);
+                meshIndex++;
+            }
+        }
+    }
 
     if (fireMaterial) { const frame = Math.floor(time / 50); const fireSwap = Math.floor(time / 150) % 2 === 0; if (fireTexture2 && fireTexture2.image && fireSwap) fireMaterial.map = fireTexture2; else if (fireTexture1) fireMaterial.map = fireTexture1; if (fireMaterial.map && fireMaterial.map.image) fireMaterial.map.offset.y = (ANIM_FRAMES - 1 - (frame % ANIM_FRAMES)) / ANIM_FRAMES; }
 
@@ -1013,18 +1016,33 @@ function animate() {
     if (viewMode !== 0) {
         const pivotPos = new THREE.Vector3(); camera.getWorldPosition(pivotPos); if(isCrouching) pivotPos.y -= 8;
         const camDir = new THREE.Vector3(); camera.getWorldDirection(camDir); const rayDir = camDir.clone().negate(); if (viewMode === 2) rayDir.negate(); 
-        
-        const ray = new THREE.Raycaster(pivotPos, rayDir);
-        const hit = customRaycast(ray, 60);
-        let targetDist = MAX_TPS_DIST; if (hit) { targetDist = Math.max(2, hit.distance - 2); }
+        const ray = new THREE.Raycaster(pivotPos, rayDir); const hit = customRaycast(ray, 60);
+        let targetDist = MAX_TPS_DIST; if (hit) targetDist = Math.max(2, hit.distance - 2);
         tpsCamDist += (targetDist - tpsCamDist) * 0.2; 
         if (viewMode === 1) camera.position.z += tpsCamDist; else { camera.position.z -= tpsCamDist; camera.rotation.y += Math.PI; camera.rotation.x *= -1; }
     }
 
-    // High performance highlight check instead of huge ThreeJS hierarchy
     const rCheck = new THREE.Raycaster(); rCheck.setFromCamera(new THREE.Vector2(0,0), camera);
     const hlHit = customRaycast(rCheck, 60);
-    if(hlHit) { highlightMesh.visible = true; highlightMesh.position.set(hlHit.blockData.x, hlHit.blockData.y, hlHit.blockData.z); } else { highlightMesh.visible = false; }
+    if(hlHit) { 
+        highlightMesh.visible = true; highlightMesh.position.set(hlHit.blockData.x, hlHit.blockData.y, hlHit.blockData.z); 
+        
+        if(isBreaking) {
+            const currentKey = getKey(hlHit.blockData.x, hlHit.blockData.y, hlHit.blockData.z);
+            if(currentKey !== breakTargetKey) { breakTargetKey = currentKey; breakTimer = 0; }
+            
+            const reqTime = getBreakTime(hlHit.blockData.type, inventory[selectedSlot]);
+            breakTimer += delta;
+            
+            const progress = Math.min(1, breakTimer / reqTime);
+            highlightMesh.material.color.setRGB(progress, 0, 0); 
+            
+            if(breakTimer >= reqTime) {
+                if (gameMode === 'survival' && !SIMPLE_BLOCKS.has(hlHit.blockData.type)) { if(hlHit.blockData.type === 'fire') { if(hlHit.blockData.mesh.userData.health > 1) { hlHit.blockData.mesh.userData.health--; return; } } else if (hlHit.blockData.type === 'lava' || hlHit.blockData.type === 'nether_portal') return; }
+                removeBlockFromData(hlHit.blockData); isBreaking = false; breakTimer = 0; breakTargetKey = null; highlightMesh.material.color.setHex(0x000000); handSwingTime = 1;
+            } else if (progress > 0) { handSwingType = 'punch'; handSwingTime = 0.5; }
+        } else { highlightMesh.material.color.setHex(0x000000); }
+    } else { highlightMesh.visible = false; isBreaking = false; }
     
     renderer.clear(); renderer.render(scene, camera);
     renderer.clearDepth(); renderer.render(hudScene, hudCamera);
@@ -1051,7 +1069,7 @@ function onKeyDown(e) {
         case 'KeyQ': if(controls.isLocked) throwItem(); break; 
         case 'KeyE':
             if(controls.isLocked) {
-                controls.unlock(); isInventoryOpen = true;
+                controls.unlock(); isInventoryOpen = true; isBreaking = false;
                 if (gameMode === 'survival') { craftingMode = 2; for(let i=36; i<45; i++) inventory[i] = null; document.getElementById('inventory-screen').style.display = 'flex'; document.getElementById('creative-screen').style.display = 'none'; } 
                 else { document.getElementById('inventory-screen').style.display = 'none'; document.getElementById('creative-screen').style.display = 'flex'; } renderInventory();
             } else if (isInventoryOpen) { isInventoryOpen = false; document.getElementById('inventory-screen').style.display = 'none'; document.getElementById('creative-screen').style.display = 'none'; document.getElementById('chest-screen').style.display = 'none'; document.getElementById('furnace-screen').style.display = 'none'; currentChest = null; currentFurnace = null; if(!document.pointerLockElement) controls.lock(); } break;
@@ -1066,55 +1084,57 @@ function onKeyDown(e) {
 function onKeyUp(e) { if(['KeyW','KeyS','KeyA','KeyD'].includes(e.code)) { if(e.code==='KeyW') { moveForward=false; isSprinting = false; } if(e.code==='KeyS') moveBackward=false; if(e.code==='KeyA') moveLeft=false; if(e.code==='KeyD') moveRight=false; } if(e.code === 'ShiftLeft') { moveDown = false; isCrouching = false; } if(e.code === 'Space') moveUp = false; }
 function onScroll(e) { if(controls.isLocked) { selectedSlot = (selectedSlot + (e.deltaY>0?1:-1) + 9) % 9; renderInventory(); } }
 
-function onMouseClick(e) {
+document.addEventListener('mousedown', (e) => {
     if(isTitleScreen || isPaused || isChatOpen) return;
     if(!controls.isLocked) { if(e.target === renderer.domElement && !document.pointerLockElement) controls.lock(); return; }
     
-    handSwingType = e.button === 0 ? 'punch' : 'place'; handSwingTime = 1;
+    if (e.button === 0) { isBreaking = true; breakTimer = 0; } 
+    else if (e.button === 2) handleRightClickAction();
+});
 
+document.addEventListener('mouseup', (e) => {
+    if (e.button === 0) { isBreaking = false; breakTimer = 0; breakTargetKey = null; highlightMesh.material.color.setHex(0x000000); }
+});
+
+function handleRightClickAction() {
+    handSwingType = 'place'; handSwingTime = 1;
     const ray = new THREE.Raycaster(); ray.setFromCamera(new THREE.Vector2(0,0), camera);
     const hit = customRaycast(ray, 60);
     
     if(hit) {
         const blockData = hit.blockData;
-        if(e.button === 0) { 
-            if (gameMode === 'survival' && !blockData.isInstanced) { if(blockData.type === 'fire') { if(blockData.mesh.userData.health > 1) { blockData.mesh.userData.health--; return; } } else if (blockData.type === 'lava' || blockData.type === 'nether_portal') return; }
-            removeBlockFromData(blockData);
-        } 
-        if(e.button === 2) { 
-            const item = inventory[selectedSlot];
-            if (!blockData.isInstanced) {
-                const obj = blockData.mesh;
-                if (blockData.type.includes('door') || blockData.type === 'oak_trapdoor') {
-                    const newState = !obj.userData.isOpen;
-                    const updateDoorVisuals = (targetObj) => {
-                        targetObj.userData.isOpen = newState;
-                        if (targetObj.userData.type === 'oak_trapdoor') { targetObj.rotation.x = newState ? -Math.PI/2 : 0; targetObj.position.y += newState ? BLOCK*0.4 : -BLOCK*0.4; } 
-                        else { targetObj.rotation.y = newState ? Math.PI/2 : 0; targetObj.position.x = newState ? targetObj.userData.baseX + BLOCK*0.4 : targetObj.userData.baseX; targetObj.position.z = newState ? targetObj.userData.baseZ + BLOCK*0.4 : targetObj.userData.baseZ; }
-                    };
-                    updateDoorVisuals(obj);
-                    if (blockData.type === 'oak_door_b') { const top = worldMap.get(getKey(blockData.x, blockData.y + BLOCK, blockData.z)); if(top && top.type === 'oak_door_top') updateDoorVisuals(top.mesh); } 
-                    else if (blockData.type === 'oak_door_top') { const bot = worldMap.get(getKey(blockData.x, blockData.y - BLOCK, blockData.z)); if(bot && bot.type === 'oak_door_b') updateDoorVisuals(bot.mesh); }
-                    return;
-                }
-                if ((blockData.type === 'chest' || blockData.type === 'large_chest') && !isCrouching) { controls.unlock(); isInventoryOpen = true; currentChest = obj; document.getElementById('chest-screen').style.display = 'flex'; renderInventory(); return; }
-                if(blockData.type === 'furnace' && !isCrouching) { controls.unlock(); isInventoryOpen = true; currentFurnace = obj; document.getElementById('furnace-screen').style.display = 'flex'; renderInventory(); return; }
-                if(blockData.type === 'crafting_table' && !isCrouching) { controls.unlock(); isInventoryOpen = true; craftingMode = 3; for(let i=36; i<45; i++) inventory[i] = null; document.getElementById('inventory-screen').style.display = 'flex'; document.getElementById('creative-screen').style.display = 'none'; renderInventory(); return; }
+        const item = inventory[selectedSlot];
+        if (!SIMPLE_BLOCKS.has(blockData.type)) {
+            const obj = blockData.mesh;
+            if (blockData.type.includes('door') || blockData.type === 'oak_trapdoor') {
+                const newState = !obj.userData.isOpen;
+                const updateDoorVisuals = (targetObj) => {
+                    targetObj.userData.isOpen = newState;
+                    if (targetObj.userData.type === 'oak_trapdoor') { targetObj.rotation.x = newState ? -Math.PI/2 : 0; targetObj.position.y += newState ? BLOCK*0.4 : -BLOCK*0.4; } 
+                    else { targetObj.rotation.y = newState ? Math.PI/2 : 0; targetObj.position.x = newState ? targetObj.userData.baseX + BLOCK*0.4 : targetObj.userData.baseX; targetObj.position.z = newState ? targetObj.userData.baseZ + BLOCK*0.4 : targetObj.userData.baseZ; }
+                };
+                updateDoorVisuals(obj);
+                if (blockData.type === 'oak_door_b') { const top = worldMap.get(getKey(blockData.x, blockData.y + BLOCK, blockData.z)); if(top && top.type === 'oak_door_top') updateDoorVisuals(top.mesh); } 
+                else if (blockData.type === 'oak_door_top') { const bot = worldMap.get(getKey(blockData.x, blockData.y - BLOCK, blockData.z)); if(bot && bot.type === 'oak_door_b') updateDoorVisuals(bot.mesh); }
+                return;
             }
-
-            if(!item) return;
-
-            const pos = new THREE.Vector3(blockData.x, blockData.y, blockData.z).add(hit.normal.multiplyScalar(BLOCK));
-            
-            if (item.id === 'oak_door') { placeBlock(pos.x, pos.y, pos.z, 'oak_door_b'); placeBlock(pos.x, pos.y + BLOCK, pos.z, 'oak_door_top'); } 
-            else if(ITEMS[item.id].block) {
-                const pPos = controls.getObject().position; const dx = Math.abs(pos.x - pPos.x); const dz = Math.abs(pos.z - pPos.z); const feetY = pPos.y - currentEyeHeight; 
-                if (dx < 15 && dz < 15 && (feetY < pos.y+10 && pPos.y > pos.y-10) && item.id !== 'fire' && item.id !== 'lava') return; 
-                let rotation = 0; if (item.id === 'furnace' || item.id === 'chest') { const angle = Math.atan2(pPos.x - pos.x, pPos.z - pos.z); rotation = Math.round(angle / (Math.PI / 2)) * (Math.PI / 2); }
-                placeBlock(pos.x, pos.y, pos.z, item.id, 0, rotation); checkGravityTrigger(pos.x, pos.y, pos.z);
-            } else if(item.id === 'flint_and_steel') { placeBlock(pos.x, pos.y, pos.z, 'fire'); }
-
-            if (gameMode === 'survival') { item.count--; if(item.count <= 0) inventory[selectedSlot] = null; } renderInventory();
+            if ((blockData.type === 'chest' || blockData.type === 'large_chest') && !isCrouching) { controls.unlock(); isInventoryOpen = true; currentChest = obj; document.getElementById('chest-screen').style.display = 'flex'; renderInventory(); isBreaking = false; return; }
+            if(blockData.type === 'furnace' && !isCrouching) { controls.unlock(); isInventoryOpen = true; currentFurnace = obj; document.getElementById('furnace-screen').style.display = 'flex'; renderInventory(); isBreaking = false; return; }
+            if(blockData.type === 'crafting_table' && !isCrouching) { controls.unlock(); isInventoryOpen = true; craftingMode = 3; for(let i=36; i<45; i++) inventory[i] = null; document.getElementById('inventory-screen').style.display = 'flex'; document.getElementById('creative-screen').style.display = 'none'; renderInventory(); isBreaking = false; return; }
         }
+
+        if(!item) return;
+
+        const pos = new THREE.Vector3(blockData.x, blockData.y, blockData.z).add(hit.normal.multiplyScalar(BLOCK));
+        
+        if (item.id === 'oak_door') { placeBlock(pos.x, pos.y, pos.z, 'oak_door_b'); placeBlock(pos.x, pos.y + BLOCK, pos.z, 'oak_door_top'); } 
+        else if(ITEMS[item.id].block) {
+            const pPos = controls.getObject().position; const dx = Math.abs(pos.x - pPos.x); const dz = Math.abs(pos.z - pPos.z); const feetY = pPos.y - currentEyeHeight; 
+            if (dx < 15 && dz < 15 && (feetY < pos.y+10 && pPos.y > pos.y-10) && item.id !== 'fire' && item.id !== 'lava') return; 
+            let rotation = 0; if (item.id === 'furnace' || item.id === 'chest') { const angle = Math.atan2(pPos.x - pos.x, pPos.z - pos.z); rotation = Math.round(angle / (Math.PI / 2)) * (Math.PI / 2); }
+            placeBlock(pos.x, pos.y, pos.z, item.id, 0, rotation); checkGravityTrigger(pos.x, pos.y, pos.z);
+        } else if(item.id === 'flint_and_steel') { placeBlock(pos.x, pos.y, pos.z, 'fire'); }
+
+        if (gameMode === 'survival') { item.count--; if(item.count <= 0) inventory[selectedSlot] = null; } renderInventory();
     }
 }
